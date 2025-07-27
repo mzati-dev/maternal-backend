@@ -9,6 +9,15 @@ import sklearn
 import numpy as np
 from sklearn.preprocessing import OneHotEncoder
 from typing import Dict, Any, Union
+import os # Added for accessing environment variables
+from dotenv import load_dotenv # <--- Add this import
+
+# --- ADDED: Gemini AI Integration ---
+# Import the Google Generative AI library
+import google.generativeai as genai
+# --- END ADDED SECTION ---
+
+load_dotenv() # <--- Add this line to load the .env file
 
 app = Flask(__name__)
 CORS(app)
@@ -17,6 +26,23 @@ CORS(app)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 logger.info(f"Using scikit-learn version: {sklearn.__version__}")
+# --- ADDED: Gemini AI Configuration ---
+# Authenticate with your Gemini API Key from environment variables.
+# For this to work, you must set the GEMINI_API_KEY in your environment.
+# Example: export GEMINI_API_KEY="YOUR_API_KEY_HERE"
+gemini_model = None
+try:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        logger.warning("GEMINI_API_KEY environment variable not set. AI recommendations will be disabled, falling back to static lists.")
+    else:
+        genai.configure(api_key=api_key)
+        gemini_model = genai.GenerativeModel("gemini-2.0-flash")
+        logger.info("Gemini AI model 'gemini-2.0-flash' initialized successfully.")
+except Exception as e:
+    logger.error(f"Failed to initialize Gemini AI model: {e}")
+    gemini_model = None # Ensure model is None if initialization fails
+# --- END ADDED SECTION ---
 
 # Constants
 MALAWI_DISTRICTS = [
@@ -56,7 +82,7 @@ encoder = None
 FEATURE_NAMES = [
     'Age', 'Location', 'ChronicalCondition', 'PreviousPregnancyComplication',
     'GestationAge', 'Gravidity', 'Parity', 'AntenatalVisit', 'Systolic',
-    'Dystolic', 'PulseRate', 'SpecificComplication', 'DeliveryMode',
+    'Dystolic', 'PulseRate', 'location_Urban', 'SpecificComplication', 'DeliveryMode',
     'StaffConductedDelivery'
 ]
 CATEGORICAL_COLS = [
@@ -70,20 +96,20 @@ NUMERICAL_COLS = [
 
 
 FEATURE_MAPPING = {
-    'age': 'Age',
-    'location': 'Location',
-    'chronicCondition': 'ChronicalCondition',
-    'previousPregnancyComplication': 'PreviousPregnancyComplication',
-    'gestationAge': 'GestationAge',
-    'gravidity': 'Gravidity',
-    'parity': 'Parity',
-    'antenatalVisit': 'AntenatalVisit',
-    'systolic': 'Systolic',
-    'diastolic': 'Dystolic', # Corrected from Dystolic to Diastolic for API input mapping
-    'pulseRate': 'PulseRate',
-    'specificComplication': 'SpecificComplication',
-    'deliveryMode': 'DeliveryMode',
-    'staffConductedDelivery': 'StaffConductedDelivery'
+    'age': 'age',
+    'location': 'location',
+    'chronicCondition': 'chronicalcondition',
+    'previousPregnancyComplication': 'previouspregnancycomplication',
+    'gestationAge': 'gestationage',
+    'gravidity': 'gravidity',
+    'parity': 'parity',
+    'antenatalVisit': 'antenatalvisit',
+    'systolic': 'systolic',
+    'diastolic': 'dystolic',
+    'pulseRate': 'pulserate',
+    'specificComplication': 'specificcomplication',
+    'deliveryMode': 'deliverymode',
+    'staffConductedDelivery': 'staffconducteddelivery'
 }
 
 
@@ -113,28 +139,45 @@ def load_model_with_fallback(filepath):
 # Load the model globally when the app starts
 try:
     model, encoder, FEATURE_NAMES, CATEGORICAL_COLS, NUMERICAL_COLS = load_model_with_fallback(
-        'model/maternal_risk_predictor(1).pkl'
+        'model/maternal_system_predictor.pkl'
     )
     if model:
         logger.info("Model and metadata loaded successfully.")
         # Perform a quick test prediction
         try:
             # Create proper test data with correct values, aligning with FEATURE_NAMES
+            # test_data_dict = {
+            #     'Age': 25,
+            #     'Location': 'Urban',
+            #     'ChronicalCondition': 'No',
+            #     'PreviousPregnancyComplication': 'No',
+            #     'GestationAge': 38,
+            #     'Gravidity': 2,
+            #     'Parity': 1,
+            #     'AntenatalVisit': 4,
+            #     'Systolic': 120,
+            #     'Dystolic': 80, # This maps to 'diastolic' in API input but 'Dystolic' in model features
+            #     'PulseRate': 70,
+            #     'SpecificComplication': 'No',
+            #     'DeliveryMode': 'Spontaneous Vertex Delivery',
+            #     'StaffConductedDelivery': 'Skilled'
+            # }
+
             test_data_dict = {
-                'Age': 25,
-                'Location': 'Urban',
-                'ChronicalCondition': 'No',
-                'PreviousPregnancyComplication': 'No',
-                'GestationAge': 38,
-                'Gravidity': 2,
-                'Parity': 1,
-                'AntenatalVisit': 4,
-                'Systolic': 120,
-                'Dystolic': 80, # This maps to 'diastolic' in API input but 'Dystolic' in model features
-                'PulseRate': 70,
-                'SpecificComplication': 'No',
-                'DeliveryMode': 'Spontaneous Vertex Delivery',
-                'StaffConductedDelivery': 'Skilled'
+                'age': 25,
+                'location': 'Urban',
+                'chronicalcondition': 'No',
+                'previouspregnancycomplication': 'No',
+                'gestationage': 38,
+                'gravidity': 2,
+                'parity': 1,
+                'antenatalvisit': 4,
+                'systolic': 120,
+                'dystolic': 80,
+                'pulserate': 70,
+                'specificcomplication': 'No',
+                'deliverymode': 'Spontaneous Vertex Delivery',
+                'staffconducteddelivery': 'Skilled'
             }
             test_df = pd.DataFrame([test_data_dict])
 
@@ -174,6 +217,56 @@ try:
 except Exception as e:
     logger.error(f"Error during model initialization or initial test: {str(e)}", exc_info=True)
     model = None # Ensure model is None if there's any loading error
+
+# --- ADDED: Gemini Recommendation Function ---
+def generate_ai_recommendations(patient_data: dict, risk_level: str) -> list:
+    """
+    Generates personalized recommendations using the Gemini AI model.
+    Falls back to a static list if the AI model is unavailable or fails.
+    """
+    # If the Gemini model wasn't initialized, use the static recommendations
+    if not gemini_model:
+        logger.warning("Gemini model not available. Using static recommendations for the assessed risk level.")
+        return RECOMMENDATIONS[risk_level]
+
+    # Prepare the prompt for the AI model
+    prompt = f"""
+    Given the following maternal health case data:
+    - Age: {patient_data.get('age')}
+    - Gravidity: {patient_data.get('gravidity')}
+    - Systolic BP: {patient_data.get('systolic')}
+    - Diastolic BP: {patient_data.get('diastolic')}
+    - Pulse Rate: {patient_data.get('pulseRate')}
+    - Delivery Mode: {patient_data.get('deliveryMode')}
+    - Specific Complication: {patient_data.get('specificComplication')}
+    - Chronic Condition: {patient_data.get('chronicCondition')}
+    - Antenatal Visits: {patient_data.get('antenatalVisit')}
+    - Assessed Risk Level: {risk_level}
+
+    Please provide 3–5 personalized, concise, and medically relevant maternal care     recommendations to reduce maternal and fetal risk.
+    Format the response as a simple list, with each recommendation on a new line.      Do not use markdown like bullet points (- or *).
+    """
+
+    try:
+        logger.info("Sending request to Gemini for AI-based recommendations.")
+        response = gemini_model.generate_content(prompt)
+        text_output = response.text.strip()
+
+        # Split the text response into a list of individual recommendations
+        recommendations = [line.lstrip("-• ").strip() for line in        text_output.split("\n") if line.strip()]
+        
+        # If the AI returns an empty or invalid response, fall back to static list
+        if not recommendations:
+             logger.warning("Gemini returned an empty response. Falling back to static recommendations.")
+             return RECOMMENDATIONS[risk_level]
+
+        logger.info("Successfully received recommendations from Gemini.")
+        return recommendations
+    except Exception as e:
+        logger.error(f"Gemini recommendation generation error: {e}. Falling back to static recommendations.")
+        # If any error occurs during the API call, use the static recommendations as a fallback
+        return RECOMMENDATIONS[risk_level]
+# --- END ADDED SECTION ---    
 
 def validate_input(data: Dict[str, Any]) -> Union[None, Dict[str, str]]:
     """Validate input data against model requirements"""
@@ -453,13 +546,22 @@ def assess_risk():
             # Use logic-based approach if model is not available
             current_risk, current_probability = calculate_risk(data)
             risk_override_applied = False # No override as no model prediction to override
+            # --- MODIFIED: Call Gemini for recommendations ---
+        # Instead of using the static RECOMMENDATIONS dictionary directly,
+        # call the new function to generate dynamic recommendations from Gemini.
+        # This function has a built-in fallback to the static list if the API fails.
+        recommendations = generate_ai_recommendations(data, current_risk)
+        # --- END MODIFIED SECTION ---
 
         response = {
             "patientId": data.get('patientId', f"patient-{int(time.time() * 1000)}"),
             "patientName": data.get('name', 'N/A'), # Assuming 'name' is used for patientName
             "riskLevel": current_risk,
             "probability": round(current_probability, 4),
-            "recommendations": RECOMMENDATIONS[current_risk],
+            # "recommendations": RECOMMENDATIONS[current_risk],
+                        # --- MODIFIED: Use the recommendations from the new function call ---
+            "recommendations": recommendations,
+            # --- END MODIFIED SECTION ---
             "timestamp": datetime.utcnow().isoformat() + 'Z',
             "inputFeatures": data,
             "riskOverrideApplied": risk_override_applied,
@@ -494,6 +596,9 @@ def health_check():
     return jsonify({
         'status': 'healthy',
         'model_loaded': model is not None,
+        # --- MODIFIED: Added Gemini status to health check ---
+        'gemini_model_loaded': gemini_model is not None,
+        # --- END MODIFIED SECTION ---
         'timestamp': datetime.utcnow().isoformat() + 'Z'
     })
 
