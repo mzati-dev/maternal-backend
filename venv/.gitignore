@@ -12,8 +12,6 @@ ENV/
 .env
 .env.*
 
-
-
 # Ignore logs
 *.log
 

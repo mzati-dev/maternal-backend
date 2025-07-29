@@ -5,3 +5,6 @@ services:
     buildCommand: "pip install -r requirements.txt"
     startCommand: "gunicorn app:app"
     plan: free
+    envVars:
+      - key: GEMINI_API_KEY
+        fromGroup: gemini-api-key
