@@ -161,8 +161,8 @@ try:
             test_data_dict = {
                 'age': 25,
                 'location': 'Urban',
-                'chronicalcondition': 'No',
-                'previouspregnancycomplication': 'No',
+                'chronicalcondition': 'None',
+                'previouspregnancycomplication': 'None',
                 'gestationage': 38,
                 'gravidity': 2,
                 'parity': 1,
@@ -170,7 +170,7 @@ try:
                 'systolic': 120,
                 'dystolic': 80,
                 'pulserate': 70,
-                'specificcomplication': 'No',
+                'specificcomplication': 'None',
                 'deliverymode': 'Spontaneous Vertex Delivery',
                 'staffconducteddelivery': 'Skilled'
             }
@@ -323,15 +323,13 @@ def prepare_input_data_for_model(api_data: Dict[str, Any]) -> pd.DataFrame:
         # Handle potential KeyError if a category not seen during training appears
         try:
             encoded_categorical = encoder.transform(categorical_df)
-            encoded_df = pd.DataFrame(encoded_categorical.toarray(), # .toarray() for sparse matrices
+            encoded_df = pd.DataFrame(encoded_categorical.toarray(), 
                                       columns=encoder.get_feature_names_out(CATEGORICAL_COLS),
-                                      index=input_df.index) # Maintain index for concat
+                                      index=input_df.index) 
         except ValueError as e:
             logger.error(f"Error during encoding: {e}. This might be due to unseen categories. "
                          f"Input categorical data: {categorical_df.to_dict('records')}")
-            # If an unseen category causes an error, it's safer to return an empty DataFrame
-            # or handle more robustly based on application needs.
-            # For this context, we'll re-raise as it's a critical preprocessing step.
+          
             raise ValueError(f"Failed to encode categorical features: {e}. "
                              "Ensure all categories in request data were present during model training.")
 
@@ -339,14 +337,12 @@ def prepare_input_data_for_model(api_data: Dict[str, Any]) -> pd.DataFrame:
         # Concatenate numerical and encoded categorical features
         processed_df = pd.concat([numerical_df, encoded_df], axis=1)
     else:
-        # If no encoder, assume model only uses numerical features or handles categorical internally
-        # This branch might be less robust if the model actually needs encoding but encoder wasn't loaded
+       
         processed_df = input_df[NUMERICAL_COLS]
         logger.warning("No encoder available. Only numerical columns will be used for prediction.")
 
 
-    # Ensure all expected features (from model's training) are present and in correct order
-    # This is crucial if the model expects a fixed number of features in a specific order
+   
     if model and hasattr(model, 'feature_names_in_') and model.feature_names_in_ is not None:
         # Create a DataFrame with all expected features, initialized to 0 or NaN
         final_input_df = pd.DataFrame(0, index=processed_df.index, columns=model.feature_names_in_)
@@ -357,17 +353,18 @@ def prepare_input_data_for_model(api_data: Dict[str, Any]) -> pd.DataFrame:
         # Return the DataFrame with columns in the exact order the model expects
         return final_input_df[model.feature_names_in_]
     else:
-        # If model doesn't expose feature_names_in_ or model not loaded,
-        # assume processed_df is sufficient. This might be risky.
+       
         logger.warning("Model's feature_names_in_ not found or model not loaded. "
                        "Proceeding with available processed features. This might lead to prediction errors.")
         return processed_df
 
 def calculate_risk(patient_data):
     """Calculate risk based on patient data using logical rules"""
-    # Use get() with default values to prevent KeyError if a field is missing (though validation should catch this)
+   
     age = patient_data.get('age', 0)
     gravidity = patient_data.get('gravidity', 0)
+    parity = patient_data.get('parity', 0)
+    gestation_age = patient_data.get('gestationAge', 0)
     systolic = patient_data.get('systolic', 0)
     diastolic = patient_data.get('diastolic', 0)
     antenatal_visit = patient_data.get('antenatalVisit', 0)
@@ -379,27 +376,52 @@ def calculate_risk(patient_data):
     staff_conducted_delivery = patient_data.get('staffConductedDelivery', '')
 
     # High-Risk Factors (will trigger High Risk if true)
+   
+    few_visits_risk = False
+    visit_probability = 0.0
+
+    if antenatal_visit < 4:
+        few_visits_risk = True
+        visit_probability = 0.7  
+        
+        # Increase risk if late in pregnancy with few visits
+        if gestation_age > 28:  # Third trimester
+            visit_probability = 0.85
+        elif gestation_age > 20:  # Second trimester
+            visit_probability = 0.75
+            
+        # First-time mothers with few visits are higher risk
+        if parity == 0:
+            visit_probability = min(visit_probability + 0.1, 0.95)
+            
+        # Existing complications make few visits even riskier
+        if specific_complication != 'None' or chronic_condition != 'None':
+            visit_probability = min(visit_probability + 0.15, 1.0)
+
     age_risk = age <= 16 or age >= 35
     gravidity_risk = gravidity >= 4
     bp_risk = systolic >= 140 or diastolic >= 90
     few_antenatal_visits = antenatal_visit < 4
     cesarean_risk = delivery_mode == "Caesarean Section"
-    complication_risk = specific_complication == "Yes"
+    chronic_condition_risk = chronic_condition != "None"
+    complication_risk = specific_complication != "None"
     pulseRateRisk = pulse_rate <= 60 or pulse_rate >= 100
 
     # Combine high-risk factors for initial risk level
     is_high_risk = (age_risk or gravidity_risk or bp_risk or
-                    few_antenatal_visits or cesarean_risk or complication_risk or pulseRateRisk)
+                    few_antenatal_visits or cesarean_risk or complication_risk or chronic_condition_risk or pulseRateRisk)
 
     risk_level = 'High' if is_high_risk else 'Low'
 
-    # Probability calculation (simplified for logical rules)
+    # Probability calculation 
     probability = 0.0 # Default low probability
 
     if cesarean_risk:
         probability = 0.95
     elif complication_risk:
         probability = 0.9
+    elif chronic_condition_risk:
+        probability = 0.88
     elif bp_risk:
         probability = 0.85
     elif age_risk:
@@ -408,13 +430,14 @@ def calculate_risk(patient_data):
         probability = 0.75
     elif few_antenatal_visits:
         probability = 0.7
+    elif few_visits_risk:
+        probability = visit_probability
     elif pulseRateRisk:
         probability = 0.8
 
     # Low-risk factors slightly increase probability for 'Low' risk
-    elif chronic_condition == "Yes":
-        probability = max(probability, 0.4) # Ensure it doesn't decrease a high prob
-    elif previous_complication == "Yes":
+    
+    elif previous_complication != "None":
         probability = max(probability, 0.35)
     elif staff_conducted_delivery == "Unskilled":
         probability = max(probability, 0.3)
@@ -436,14 +459,16 @@ def override_risk_based_on_rules(input_data: Dict[str, Any], current_risk: str, 
     """
     try:
         # Convert all inputs to appropriate types
-        # Using .get() for safety against missing keys, though validation should catch most
+      
         age = float(input_data.get('age', 0))
         gravidity = int(float(input_data.get('gravidity', 0)))
         parity = int(float(input_data.get('parity', 0)))
+        gestation_age = float(input_data.get('gestationAge', 0))
+        antenatal_visit = int(float(input_data.get('antenatalVisit', 0)))
         systolic = float(input_data.get('systolic', 0))
         diastolic = float(input_data.get('diastolic', 0))
-        specific_complication = input_data.get('specificComplication', 'No') # Assume 'No' if not present
-
+        specific_complication = input_data.get('specificComplication', 'None') # Assume 'No' if not present
+        chronic_condition = input_data.get('chronicCondition', 'None')
         logger.info(f"Checking override rules with - Age: {age}, Gravidity: {gravidity}, Parity: {parity}, BP: {systolic}/{diastolic}, Complication: {specific_complication}")
 
         # Rule 1: Very young mother with existing children
@@ -461,16 +486,25 @@ def override_risk_based_on_rules(input_data: Dict[str, Any], current_risk: str, 
             return ("High", 0.85)
 
         # Rule 3: Specific Complication present
-        if specific_complication == "Yes":
+        if specific_complication != "None":
             logger.info("RULE TRIGGERED: Specific Complication present -> High Risk (0.98)")
             return ("High", 0.98) # Very high probability if explicit complication
+       
+        if chronic_condition != "None":
+           logger.info(f"RULE TRIGGERED: Chronic condition ({chronic_condition}) -> High Risk (0.9)")
+           return ("High", 0.9)
+        if antenatal_visit < 2 and gestation_age > 20:
+           return ("High", 0.95)
+        elif antenatal_visit < 4 and gestation_age > 28:
+            
+           return ("High", 0.9)
 
         logger.info("No override rules triggered, using model prediction (or initial logic prediction).")
         return (current_risk, current_prob)
 
     except Exception as e:
         logger.error(f"Error in risk override: {str(e)}", exc_info=True)
-        # If an error occurs in the override logic, fall back to the original assessment
+       
         return (current_risk, current_prob)
 
 
@@ -499,7 +533,7 @@ def assess_risk():
 
         logger.info(f"Received request data: {data}")
 
-        # Validate input data
+     
         validation_error = validate_input(data)
         if validation_error:
             logger.error(f"Validation error: {validation_error['error']}")
@@ -548,13 +582,10 @@ def assess_risk():
 
         response = {
             "patientId": data.get('patientId', f"patient-{int(time.time() * 1000)}"),
-            "patientName": data.get('name', 'N/A'), # Assuming 'name' is used for patientName
+            "patientName": data.get('name', 'N/A'), 
             "riskLevel": current_risk,
             "probability": round(current_probability, 4),
-            # "recommendations": RECOMMENDATIONS[current_risk],
-                        # --- Use the recommendations from the new function call ---
             "recommendations": recommendations,
-         
             "timestamp": datetime.utcnow().isoformat() + 'Z',
             "inputFeatures": data,
             "riskOverrideApplied": risk_override_applied,

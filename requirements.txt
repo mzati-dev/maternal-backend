@@ -4,6 +4,7 @@ flask
 scikit-learn==1.6.1
 gunicorn
 flask_cors
-
-
+python-dotenv
+google-generativeai
+xgboost>=2.0.0 
 
